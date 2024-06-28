@@ -98,14 +98,8 @@ public class DatabaseConfig {
 	
 	}
 	
-	package com.robosoft.ikroya.user.config;
-import lombok.extern.log4j.Log4j2;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.TransactionException;
-import org.springframework.transaction.TransactionStatus;
+	
 
-import javax.validation.constraints.NotNull;
 @Log4j2
 public class ReplicaAwareTransactionManager implements PlatformTransactionManager {
 
@@ -146,13 +140,6 @@ public class ReplicaAwareTransactionManager implements PlatformTransactionManage
 }
 
 //to set ansd switch the transcation
-package com.robosoft.ikroya.user.config;
-
-import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
-
-import javax.sql.DataSource;
-import java.util.HashMap;
-import java.util.Map;
 
 public class TransactionRoutingDataSource extends AbstractRoutingDataSource {
     private static final ThreadLocal<DataSourceType> currentDataSource = new ThreadLocal<>();
