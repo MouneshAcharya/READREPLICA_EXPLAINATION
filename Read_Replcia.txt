@@ -1,0 +1,190 @@
+two db created with same data
+one for read 
+other for read write
+
+@Configuration
+@EntityScan   ===> to scan the entity specific to db connection 
+@Slf4j
+public class DatabaseConfig {
+
+//DS for master - read and write
+
+ @Bean
+    @ConfigurationProperties(prefix = "db.master")
+    public DataSource readWriteConfiguration() {
+        AWSSecrets secret= getSecret();
+        return DataSourceBuilder.create()
+                .driverClassName(driverClass)
+                .url("jdbc:" + secret.getEngine() + "://" + secret.getHost() + ":" + secret.getPort() + dbName)
+                .username(secret.getUsername())
+                .password(secret.getPassword())
+                .build();
+    }
+	
+	//DS for slave - read 
+	
+	@Bean
+    @ConfigurationProperties(prefix = "db.slave")
+    public DataSource readOnlyConfiguration() {
+        log.info("slave entered");
+        AWSSecrets secret= getSecret();
+        return DataSourceBuilder.create()
+                .driverClassName(driverClass)
+                .url("jdbc:" + secret.getEngine() + "://" + hostUrl + ":" + secret.getPort() + dbName)
+                .username(readUserName)
+                .password(readPassword)
+                .build();
+    }
+	
+	//to switch between read and read write connection
+	@Bean
+    @Primary
+    public DataSource routingDataSource() {
+        return new TransactionRoutingDataSource(loggingProxy("read_write", readWriteConfiguration()),
+                loggingProxy("read_only", readOnlyConfiguration()));
+    }
+
+    private DataSource loggingProxy(String name, DataSource dataSource) {
+        SLF4JQueryLoggingListener loggingListener = new SLF4JQueryLoggingListener();
+        loggingListener.setLogLevel(SLF4JLogLevel.DEBUG);
+        loggingListener.setLogger(name);
+        loggingListener.setWriteConnectionId(false);
+        return ProxyDataSourceBuilder.create(dataSource).name(name).listener(loggingListener).build();
+    }
+
+    private AWSSecrets getSecret() {
+        SecretsManagerClient client = SecretsManagerClient.builder()
+                .credentialsProvider(() -> AwsBasicCredentials.create(accessKey, secretKey))
+                .region(Region.of(region))
+                .build();
+
+        GetSecretValueRequest getSecretValueRequest = GetSecretValueRequest.builder()
+                .secretId(secretName)
+                .build();
+
+        GetSecretValueResponse getSecretValueResponse;
+
+        try {
+            getSecretValueResponse = client.getSecretValue(getSecretValueRequest);
+        } catch (Exception e) {
+            throw e;
+        }
+
+        if(getSecretValueResponse.secretString() != null) {
+            String secret = getSecretValueResponse.secretString();
+            return gson.fromJson(secret,AWSSecrets.class);
+        }
+        return null;
+    }
+
+	//common entity for read and read write
+    @Bean
+    public LocalContainerEntityManagerFactoryBean entityManagerFactory(EntityManagerFactoryBuilder builder) {
+        return builder.dataSource(routingDataSource()).packages("com.robosoft.ikroya.user.entity").build();
+    }
+
+//seperate transcsaction for read and read write to suuport that we nned to have ReplicaAwareTransactionManager
+    @Bean
+    @Primary
+    public PlatformTransactionManager transactionManager(@Qualifier("jpaTxManager") PlatformTransactionManager wrapped) {
+        return new ReplicaAwareTransactionManager(wrapped);
+    }
+
+    @Bean(name = "jpaTxManager")
+    public PlatformTransactionManager jpaTransactionManager(EntityManagerFactory emf) {
+        return new JpaTransactionManager(emf);
+    }
+	
+	
+	}
+	
+	package com.robosoft.ikroya.user.config;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionException;
+import org.springframework.transaction.TransactionStatus;
+
+import javax.validation.constraints.NotNull;
+@Log4j2
+public class ReplicaAwareTransactionManager implements PlatformTransactionManager {
+
+    private final PlatformTransactionManager wrapped;
+
+    public ReplicaAwareTransactionManager(PlatformTransactionManager platformTransactionManager) {
+        wrapped = platformTransactionManager;
+    }
+
+//top set the read only transacrtion
+    @Override
+    public @NotNull TransactionStatus getTransaction(TransactionDefinition definition) throws TransactionException {
+        log.info("inside getTransaction "+definition.isReadOnly());
+        TransactionRoutingDataSource.setReadonlyDataSource(definition != null && definition.isReadOnly());
+        return wrapped.getTransaction(definition);
+    }
+
+    @Override
+    public void commit(@NotNull TransactionStatus status) throws TransactionException {
+        try {
+            wrapped.commit(status);
+        }
+        finally {
+            TransactionRoutingDataSource.unload(); 
+			// this is imp once transaction commited we need to set back to the default transaction i.e read write
+        }
+    }
+
+    @Override
+    public void rollback(@NotNull TransactionStatus status) throws TransactionException {
+        try {
+            wrapped.rollback(status);
+        }finally {
+            TransactionRoutingDataSource.unload();
+			// this is imp once transaction commited we need to set back to the default transaction i.e read write
+        }
+    }
+}
+
+//to set ansd switch the transcation
+package com.robosoft.ikroya.user.config;
+
+import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
+
+import javax.sql.DataSource;
+import java.util.HashMap;
+import java.util.Map;
+
+public class TransactionRoutingDataSource extends AbstractRoutingDataSource {
+    private static final ThreadLocal<DataSourceType> currentDataSource = new ThreadLocal<>();
+
+    public TransactionRoutingDataSource(DataSource master, DataSource slave) {
+        Map<Object, Object> dataSources = new HashMap<>();
+        dataSources.put(DataSourceType.READ_WRITE, master);
+        dataSources.put(DataSourceType.READ_ONLY, slave);
+
+        super.setTargetDataSources(dataSources);
+        super.setDefaultTargetDataSource(master);
+    }
+
+    static void setReadonlyDataSource(boolean isReadonly) {
+        currentDataSource.set(isReadonly ? DataSourceType.READ_ONLY : DataSourceType.READ_WRITE);
+    }
+
+    public static void unload() {
+        currentDataSource.remove();
+    }
+
+    @Override
+    protected Object determineCurrentLookupKey() {
+        return currentDataSource.get();
+    }
+
+    private enum DataSourceType {
+        READ_ONLY,
+        READ_WRITE;
+    }
+}
+
+
+
+	
