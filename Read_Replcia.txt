@@ -80,7 +80,7 @@ public class DatabaseConfig {
 	//common entity for read and read write
     @Bean
     public LocalContainerEntityManagerFactoryBean entityManagerFactory(EntityManagerFactoryBuilder builder) {
-        return builder.dataSource(routingDataSource()).packages("com.robosoft.ikroya.user.entity").build();
+        return builder.dataSource(routingDataSource()).packages("com.test.data.entity").build();
     }
 
 //seperate transcsaction for read and read write to suuport that we nned to have ReplicaAwareTransactionManager
